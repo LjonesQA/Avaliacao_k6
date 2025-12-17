@@ -1,56 +1,106 @@
-Meu Relatório Técnico: Implementação do Script de Performance
+*Como Rodar o Projeto*
+Eu configurei o projeto para que qualquer pessoa consiga subir o ambiente e rodar os testes de performance com comandos simples via NPM. Abaixo, detalho o que cada comando faz:
+
+    1. Subindo o Servidor (Backend)
+Antes de qualquer teste, eu preciso garantir que a API está ativa para responder às requisições.
+
+Comando: npm run start
+
+O que acontece: Este comando executa o node server.js, subindo a API REST que processa os logins e as transferências.
+
+(Opcional) Para a versão GraphQL, utilizei: npm run start:graphql.
+
+    2. Executando o Teste de Carga Local
+Para uma execução rápida no terminal, sem interface gráfica, configurei o modo local.
+
+Comando: npm run k6:local
+
+O que acontece: Ele dispara o k6 diretamente contra o script averageLoadTest.js. É ideal para validações rápidas de Thresholds e Checks diretamente no console.
+
+    3. Executando com Dashboard (Interface Visual)
+Este é o comando que utilizo para apresentações ou análises em tempo real, pois ele habilita um painel web.
+
+Comando: npm run k6:dash
+
+O que acontece:Utilizei o cross-env para garantir que as variáveis de ambiente funcionem tanto no Windows quanto no Linux/Mac.
+
+K6_WEB_DASHBOARD=true: Ativa a interface gráfica do k6.
+
+K6_WEB_PERIOD=2s: Define que o gráfico deve ser atualizado a cada 2 segundos.
+
+*Meu Relatório Técnico: Implementação do Script de Performance*
 
 Este documento detalha as decisões técnicas e os conceitos de engenharia que apliquei no desenvolvimento do meu script desafioFinal.js. Meu objetivo foi criar um teste robusto, escalável e que simulasse o comportamento real da aplicação.
 
-Mapeamento Técnico dos Conceitos Aplicados
-1. Helpers e Abstração de Chamadas
-Para manter meu código limpo e facilitar a manutenção, decidi não escrever URLs e headers diretamente no script principal. Utilizei Helpers (apiCalls.js) para encapsular toda a lógica do protocolo HTTP.
+*Mapeamento Técnico dos Conceitos Aplicados*
+    . Data-Driven Testing (DDT)
+O teste não usa dados fixos no script; ele consome a base de dados da API para se alimentar.
 
-Aplicação: Ao chamar postRequestToken, estou abstraindo a complexidade da montagem dos headers de autenticação, o que me permite focar apenas no fluxo de negócio do teste.
+No Código: No bloco export function setup() { return getUserData('/users'); }.
 
-2. Ciclo de Vida: Setup e Data-Driven Testing (DDT)
-Não quis que meu teste trabalhasse com dados estáticos ou "chutados". Por isso, utilizei a função setup() para garantir uma massa de dados real.
+Aplicação: busca 100 usuários reais da API e os injeta no teste, garantindo que a carga seja distribuída entre contas reais.
 
-O que fiz: Meu setup() realiza uma requisição GET /users antes do início da carga. Esse array de 100 usuários é passado para as instâncias de VUs, garantindo que o teste seja guiado por dados reais (Data-Driven).
+2. Stages (Estágios de Carga)
 
-3. Modelagem de Carga com Stages e VUs
-Em vez de disparar toda a carga de uma vez, modelei o comportamento através de Stages para observar a elasticidade da API.
+No Código: No objeto stages: [ { duration: '10s', target: 8 }, ... ].
 
-Estratégia: Defini estágios de Ramp-up (subida gradual para 8 e depois 25 VUs), um Plateau (manutenção da carga máxima) e um Ramp-down (descida). Isso me permite identificar em qual nível de concorrência a performance começa a degradar.
+Aplicação: Isso permite observar o comportamento da API durante o aquecimento (Ramp-up) e no pico de tráfego (Plateau).
 
-4. Grupos e Transações de Negócio
-Para organizar as métricas e facilitar o debug, separei as ações em Groups.
+3. Thresholds (Limiares de Qualidade)
+É a "régua" que define se a performance é aceitável ou não.
 
-Aplicação: Criei o group('Login Usuário') e o group('Realizar Transferência'). Isso isola as métricas: se o login for rápido, mas a transferência falhar, consigo identificar o gargalo imediatamente no relatório final.
+No Código: thresholds: { http_req_duration: ['p(95)<200'] }.
 
-5. Checks e Validação de Resposta sob Carga
-Utilizei Checks para garantir que a API não está apenas respondendo, mas respondendo o conteúdo esperado.
+Aplicação: Verificar se pelo menos 95% das requisiçoes demoraram menos de 200ms
 
-Minha lógica: Além de verificar o status 200/201, implementei uma validação dinâmica no corpo da resposta: 'transferência realizada': (r) => r.json('from') === user.username. Isso garante a integridade dos dados mesmo com múltiplos usuários simultâneos.
+4. Checks (Verificações)
+Validações de sucesso que não interrompem o teste.
 
-6. Thresholds (SLA de Performance)
-Defini critérios rígidos de sucesso através de Thresholds.
+No Código: check(res, { 'status é 200': (r) => r.status === 200 }).
 
-Critério: Estabeleci que 95% das requisições (p(95)) devem ser respondidas em menos de 200ms. Diferente da média, o P95 me mostra a experiência real dos usuários mais afetados pela latência.
+Aplicação: Garante a integridade funcional. 
 
-7. Encadeamento de Requisições e Auth Token
-Implementei o Reaproveitamento de Resposta para lidar com a segurança da API.
+5. Groups (Organização Logística)
+Segmentação das métricas por funcionalidade.
 
-Fluxo: Extraio o token JWT da resposta do login (res.json('token')) e o injeto automaticamente na próxima requisição de transferência. Isso simula o fluxo de autenticação exato de um usuário real.
+No Código: group('Login Usuário', function() { ... }).
 
-8. Métricas Customizadas com Trends
-Para ter uma visão mais granular, criei Trends customizadas.
+Aplicação: Permite analisar separadamente o tempo de resposta do Login e da Transferência, identificando onde está o gargalo real.
 
-Motivo: O k6 mede o tempo total, mas eu queria medir tempos específicos, como o waitingTimeLogin. Isso me ajuda a entender quanto tempo o servidor leva processando (ex: custo do Bcrypt) antes de enviar o primeiro byte.
+6. Reaproveitamento de Resposta & Token de Autenticação
+É o encadeamento lógico entre duas requisições protegidas.
 
-9. Geração Sintética com Faker e Randomização
-Para evitar que o banco de dados entregue dados "viciados" ou de cache, usei o Faker e funções de randomização.
+No Código: token = res.json('token'); seguido pelo uso na função postRequestToken('/transfer', token, ...).
 
-Uso: Funções como randomEmail() e randomName() garantem que cada tentativa de cadastro ou interação utilize dados novos e únicos, forçando a API a processar cada requisição de forma independente.
+Aplicação: Captura o token gerado no login e o utiliza para autorizar a transferência, simulando o fluxo real de uma sessão.
 
-10. Pacing com Sleep
-Por fim, utilizei o sleep(1) para controlar o Pacing (ritmo) das iterações.
+7. Trends (Métricas de Tendência Customizadas)
+Cronômetros manuais para partes específicas do código.
 
-Objetivo: Isso evita que os VUs executem requisições em um loop infinito e irrealista, simulando melhor o tempo de pensamento do usuário e protegendo a pilha de rede do meu sistema operacional de exaustão de portas.
+No Código: const waitingTimeLogin = new Trend('waiting_time'); e depois waitingTimeLogin.add(res.timings.duration);.
+
+Aplicação: Isso gera estatísticas extras no relatório final, focadas apenas no tempo que o servidor levou para "pensar" antes de responder.
+
+8. Faker (Geração de Dados Dinâmicos)
+Evita o uso de dados repetidos que poderiam ser mascarados pelo cache da API.
+
+No Código: import faker from "k6/x/faker"; e o uso em randomName().
+
+Aplicação: Cria nomes e dados aleatórios para novos registros, garantindo que cada requisição seja única para o servidor.
+
+9. Variável de Ambiente
+Configuração externa que altera o comportamento do k6 sem mudar o código.
+
+No Código: O uso de  const BASE_URL = __ENV.BASE_URL || 'http://localhost:3000';
+
+Aplicação: Permite usar uma base Url em varias partes do código 
+
+10. Helpers
+Centralização de lógica repetitiva.
+
+No Código: import { ... } from './helpers/apiCalls.js';.
+
+Aplicação: Abstrai a montagem de cabeçalhos e URLs, permitindo que seu script principal foque apenas na lógica do teste.
+
 
 Com este script, consigo garantir que a aplicação não só aguenta a carga solicitada, mas mantém a integridade dos dados e respeita os tempos de resposta acordados.
